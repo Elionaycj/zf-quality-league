@@ -346,7 +346,7 @@
 
 <script type="module">
 import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-app.js";
-import { getFirestore, collection, addDoc, getDocs } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js";
+import { getFirestore, collection, addDoc, getDocs, doc, setDoc, getDoc, deleteDoc } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js";
 import { getAuth, signInWithEmailAndPassword, onAuthStateChanged, signOut } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-auth.js";
 
 /* ============================================================
@@ -363,6 +363,7 @@ const firebaseConfig = {
   appId: "1:282719414337:web:2f9c5cd31c339d2a0b3ec0"
 };
 const SESSIONS_COLLECTION = 'zfql_sessions';
+const PROGRESS_COLLECTION = 'zfql_progress';
 const firebaseConfigured = !!(firebaseConfig.apiKey && !firebaseConfig.apiKey.startsWith('COLE_AQUI'));
 let app, db, auth;
 if(firebaseConfigured){
@@ -410,6 +411,26 @@ async function saveSession(name, session){
   });
 }
 
+/* ---------- progresso em andamento (retomar de onde parou) ---------- */
+async function loadProgress(name){
+  const snap = await getDoc(doc(db, PROGRESS_COLLECTION, name));
+  return snap.exists() ? snap.data() : null;
+}
+async function saveProgress(name, progress){
+  await setDoc(doc(db, PROGRESS_COLLECTION, name), {
+    player: name,
+    order: progress.order,
+    idx: progress.idx,
+    score: progress.score,
+    answered: progress.answered,
+    log: progress.log,
+    updatedAt: new Date().toISOString()
+  });
+}
+async function clearProgress(name){
+  await deleteDoc(doc(db, PROGRESS_COLLECTION, name));
+}
+
 /* ---------- game state ---------- */
 let order = [];
 let idx = 0;
@@ -417,6 +438,7 @@ let score = 0;
 let answered = 0;
 let locked = false;
 let fullLog = []; // {q, your, right, ok}
+let progressSyncOk = true;
 
 const card = document.getElementById('card');
 const scorelineLeft = document.getElementById('scoreline-left');
@@ -552,6 +574,9 @@ function renderHeader(view){
     leftHtml += '<div class="pill"><span class="ball"></span> Pergunta <b id="cur">'+(idx+1)+'</b> / <b>'+order.length+'</b></div>';
     leftHtml += '<div class="pill">⚽ Gols <b id="score">'+score+'</b></div>';
     leftHtml += '<div class="pill">🎯 Acerto <b id="acc">'+(answered? Math.round(score/answered*100)+'%':'—')+'</b></div>';
+    leftHtml += progressSyncOk
+      ? '<div class="pill">☁ Progresso salvo</div>'
+      : '<div class="pill" style="border-color:var(--red); color:#ffb3ab;">⚠ Sem conexão — não salvou</div>';
   } else if(!isTecnico && currentPlayer){
     const agg = playerAgg(currentPlayer);
     leftHtml += '<div class="pill">🎮 Jogos <b>'+agg.games+'</b></div>';
@@ -566,6 +591,7 @@ function renderHeader(view){
       if(view !== 'graph') navHtml += '<button class="nav-btn" id="btn-graph">📊 Gráfico</button>';
     } else {
       if(view !== 'quiz') navHtml += '<button class="nav-btn" id="btn-play">▶ Jogar</button>';
+      if(view === 'quiz') navHtml += '<button class="nav-btn" id="btn-restart">♻ Recomeçar do zero</button>';
       if(view !== 'history') navHtml += '<button class="nav-btn" id="btn-history">📖 Meu histórico</button>';
       if(view !== 'ranking') navHtml += '<button class="nav-btn" id="btn-ranking">🏆 Ranking</button>';
       navHtml += '<button class="nav-btn" id="btn-switch">🔄 Trocar jogador</button>';
@@ -575,7 +601,9 @@ function renderHeader(view){
   navBtns.innerHTML = navHtml;
 
   const btnPlay = document.getElementById('btn-play');
-  if(btnPlay) btnPlay.addEventListener('click', startGame);
+  if(btnPlay) btnPlay.addEventListener('click', playOrResume);
+  const btnRestart = document.getElementById('btn-restart');
+  if(btnRestart) btnRestart.addEventListener('click', restartFromScratch);
   const btnHistory = document.getElementById('btn-history');
   if(btnHistory) btnHistory.addEventListener('click', ()=>renderHistory(currentPlayer));
   const btnRanking = document.getElementById('btn-ranking');
@@ -607,11 +635,26 @@ async function renderRosterScreen(){
   progressEl.style.width = '0%';
   renderHeader('name');
 
+  let progressMap = {};
+  try{
+    const results = await Promise.all(ROSTER.map(n=>loadProgress(n).catch(()=>null)));
+    ROSTER.forEach((n,i)=>{ progressMap[n] = results[i]; });
+  }catch(e){
+    console.error(e);
+  }
+
   card.innerHTML =
     '<div class="name-wrap">' +
       '<div class="qtext" style="margin-bottom:18px;">Quem vai jogar?</div>' +
       '<div class="roster-grid" id="rosterGrid">' +
-        ROSTER.map(n=>'<button class="roster-btn" data-name="'+escapeHtml(n)+'">'+escapeHtml(n)+'</button>').join('') +
+        ROSTER.map(n=>{
+          const prog = progressMap[n];
+          const inProgress = prog && Array.isArray(prog.order) && prog.idx < prog.order.length;
+          const badge = inProgress
+            ? '<div style="font-size:11px; font-weight:600; color:var(--pitch2); margin-top:4px;">▶ '+prog.idx+'/'+prog.order.length+' em andamento</div>'
+            : '';
+          return '<button class="roster-btn" data-name="'+escapeHtml(n)+'">'+escapeHtml(n)+badge+'</button>';
+        }).join('') +
       '</div>' +
     '</div>';
 
@@ -619,20 +662,66 @@ async function renderRosterScreen(){
     b.addEventListener('click', ()=>{
       currentPlayer = b.dataset.name;
       getPlayer(currentPlayer);
-      startGame();
+      playOrResume();
     });
   });
 }
 
 /* ---------- quiz flow ---------- */
+async function playOrResume(){
+  renderLoading('Carregando progresso…');
+  let progress = null;
+  try{
+    progress = await loadProgress(currentPlayer);
+  }catch(e){
+    console.error(e);
+  }
+  if(progress && Array.isArray(progress.order) && progress.idx < progress.order.length){
+    resumeGame(progress);
+  } else {
+    startGame();
+  }
+}
+
 function startGame(){
   order = shuffle(QUESTIONS.map((_,i)=>i));
   idx = 0; score = 0; answered = 0; locked = false; fullLog = [];
+  progressSyncOk = true;
   renderHeader('quiz');
   renderQuestion();
+  persistProgress();
 }
 
-function renderQuestion(){
+function resumeGame(progress){
+  order = progress.order;
+  idx = progress.idx;
+  score = progress.score;
+  answered = progress.answered;
+  fullLog = progress.log || [];
+  locked = false;
+  progressSyncOk = true;
+  renderHeader('quiz');
+  renderQuestion(true);
+}
+
+async function persistProgress(){
+  try{
+    await saveProgress(currentPlayer, { order, idx, score, answered, log: fullLog });
+    progressSyncOk = true;
+  }catch(e){
+    console.error(e);
+    progressSyncOk = false;
+  }
+  renderHeader('quiz');
+}
+
+async function restartFromScratch(){
+  if(!confirm('Isso apaga seu progresso atual (pergunta '+(idx+1)+'/'+order.length+') e começa as 100 perguntas do zero. Confirma?')) return;
+  try{ await clearProgress(currentPlayer); }catch(e){ console.error(e); }
+  startGame();
+}
+
+function renderQuestion(justResumed){
   locked = false;
   const qi = order[idx];
   const q = QUESTIONS[qi];
@@ -642,7 +731,10 @@ function renderQuestion(){
   const optIdx = shuffle(q.opts.map((_,i)=>i));
 
   let html = '';
-  html += '<div class="qmeta"><span class="qnum">Rodada '+(idx+1)+'</span><span class="qtag">Cartilha ZF</span></div>';
+  if(justResumed){
+    html += '<div class="feedback ok" style="margin-bottom:14px;">▶ Continuando de onde você parou.</div>';
+  }
+  html += '<div class="qmeta"><span class="qnum">Pergunta '+(idx+1)+' de '+order.length+'</span><span class="qtag">Cartilha ZF</span></div>';
   html += '<div class="qtext">'+escapeHtml(q.q)+'</div>';
   html += '<div id="opts">';
   optIdx.forEach((origI, pos)=>{
@@ -712,6 +804,7 @@ function goNext(){
     finishGame();
   } else {
     renderQuestion();
+    persistProgress();
   }
 }
 
@@ -723,12 +816,18 @@ async function finishGame(){
     log: fullLog
   };
 
+
   lastSaveFailed = false;
   try{
     await saveSession(currentPlayer, session);
   }catch(e){
     console.error(e);
     lastSaveFailed = true;
+  }
+  try{
+    await clearProgress(currentPlayer);
+  }catch(e){
+    console.error(e);
   }
   // atualiza cache local pra já refletir na tela, mesmo se o envio falhar
   const p = getPlayer(currentPlayer);
