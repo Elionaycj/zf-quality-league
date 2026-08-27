@@ -234,6 +234,26 @@
   }
   .roster-btn:hover{border-color:var(--pitch2); transform:translateY(-1px);}
 
+  /* Filtro de perguntas */
+  .filter-toolbar{display:flex; gap:10px; margin-bottom:6px; flex-wrap:wrap; align-items:center;}
+  .filter-search{
+    flex:1; min-width:160px; padding:10px 14px; border:1.5px solid #d9d3bd;
+    border-radius:8px; font-family:inherit; font-size:14px; color:var(--ink);
+  }
+  .filter-search:focus{outline:none; border-color:var(--pitch2);}
+  .filter-count{font-size:12.5px; color:#8a8470; margin-bottom:14px;}
+  .filter-list{max-height:520px; overflow-y:auto; border-top:1px solid #e2ddc9;}
+  .filter-item{display:flex; align-items:center; gap:12px; padding:11px 4px; border-bottom:1px solid #eee6d6; font-size:13.5px;}
+  .filter-item.excluded{opacity:.5;}
+  .filter-item .fnum{flex:0 0 auto; width:24px; color:#8a8470; font-family:Georgia,serif; font-weight:700; font-size:12px;}
+  .filter-item .ftext{flex:1;}
+  .filter-toggle{
+    flex:0 0 auto; border:1.5px solid #d9d3bd; border-radius:999px; padding:5px 12px;
+    font-size:12px; font-weight:700; cursor:pointer; font-family:inherit; background:#fff; color:#7a7460;
+  }
+  .filter-toggle.active{background:var(--pitch2); color:#fff; border-color:var(--pitch2);}
+  .filter-toggle.inactive{background:#fbeceb; color:var(--red); border-color:#e3b8b3;}
+
   .login-err{
     background:#fbeceb; border:1px solid #e3b8b3; color:var(--red);
     border-radius:8px; padding:10px 14px; font-size:13px; margin-bottom:14px; display:none;
@@ -364,6 +384,7 @@ const firebaseConfig = {
 };
 const SESSIONS_COLLECTION = 'zfql_sessions';
 const PROGRESS_COLLECTION = 'zfql_progress';
+const FILTERS_COLLECTION = 'zfql_filters';
 const firebaseConfigured = !!(firebaseConfig.apiKey && !firebaseConfig.apiKey.startsWith('COLE_AQUI'));
 let app, db, auth;
 if(firebaseConfigured){
@@ -430,6 +451,21 @@ async function saveProgress(name, progress){
 async function clearProgress(name){
   await deleteDoc(doc(db, PROGRESS_COLLECTION, name));
 }
+
+/* ---------- filtro de perguntas (treino personalizado) ---------- */
+async function loadFilter(name){
+  const snap = await getDoc(doc(db, FILTERS_COLLECTION, name));
+  return snap.exists() ? snap.data() : null;
+}
+async function saveFilter(name, excludedArr){
+  await setDoc(doc(db, FILTERS_COLLECTION, name), {
+    player: name,
+    excluded: excludedArr,
+    updatedAt: new Date().toISOString()
+  });
+}
+
+let excludedSet = new Set();
 
 /* ---------- game state ---------- */
 let order = [];
@@ -581,6 +617,9 @@ function renderHeader(view){
     const agg = playerAgg(currentPlayer);
     leftHtml += '<div class="pill">🎮 Jogos <b>'+agg.games+'</b></div>';
     leftHtml += '<div class="pill">🎯 Média <b>'+(agg.games? agg.pct+'%':'—')+'</b></div>';
+    if(excludedSet.size > 0){
+      leftHtml += '<div class="pill">🎯 Treino: <b>'+(100-excludedSet.size)+'/100</b> ativas</div>';
+    }
   }
   scorelineLeft.innerHTML = leftHtml;
 
@@ -594,6 +633,7 @@ function renderHeader(view){
       if(view === 'quiz') navHtml += '<button class="nav-btn" id="btn-restart">♻ Recomeçar do zero</button>';
       if(view !== 'history') navHtml += '<button class="nav-btn" id="btn-history">📖 Meu histórico</button>';
       if(view !== 'ranking') navHtml += '<button class="nav-btn" id="btn-ranking">🏆 Ranking</button>';
+      if(view !== 'filter' && view !== 'quiz') navHtml += '<button class="nav-btn" id="btn-filter">🎯 Filtrar perguntas</button>';
       navHtml += '<button class="nav-btn" id="btn-switch">🔄 Trocar jogador</button>';
     }
     navHtml += '<button class="nav-btn" id="btn-logout">🚪 Sair</button>';
@@ -610,6 +650,8 @@ function renderHeader(view){
   if(btnRanking) btnRanking.addEventListener('click', renderRanking);
   const btnGraph = document.getElementById('btn-graph');
   if(btnGraph) btnGraph.addEventListener('click', renderGraph);
+  const btnFilter = document.getElementById('btn-filter');
+  if(btnFilter) btnFilter.addEventListener('click', renderFilterScreen);
   const btnSwitch = document.getElementById('btn-switch');
   if(btnSwitch) btnSwitch.addEventListener('click', renderRosterScreen);
   const btnLogout = document.getElementById('btn-logout');
@@ -668,11 +710,22 @@ async function renderRosterScreen(){
 }
 
 /* ---------- quiz flow ---------- */
+async function loadExcludedSet(name){
+  try{
+    const f = await loadFilter(name);
+    excludedSet = new Set((f && Array.isArray(f.excluded)) ? f.excluded : []);
+  }catch(e){
+    console.error(e);
+    excludedSet = new Set();
+  }
+}
+
 async function playOrResume(){
   renderLoading('Carregando progresso…');
   let progress = null;
   try{
     progress = await loadProgress(currentPlayer);
+    await loadExcludedSet(currentPlayer);
   }catch(e){
     console.error(e);
   }
@@ -684,7 +737,10 @@ async function playOrResume(){
 }
 
 function startGame(){
-  order = shuffle(QUESTIONS.map((_,i)=>i));
+  const fullPool = QUESTIONS.map((_,i)=>i);
+  const activePool = fullPool.filter(i=>!excludedSet.has(i));
+  const pool = activePool.length >= 4 ? activePool : fullPool; // trava de segurança
+  order = shuffle(pool);
   idx = 0; score = 0; answered = 0; locked = false; fullLog = [];
   progressSyncOk = true;
   renderHeader('quiz');
@@ -998,6 +1054,91 @@ async function renderGraph(){
   html += '<div style="margin-top:6px; font-size:12px; color:#8a8470;">Acesse o Ranking pra ver os números em tabela e o histórico detalhado de cada jogador.</div>';
 
   card.innerHTML = html;
+}
+
+/* ---------- filtro de perguntas (treino personalizado) ---------- */
+async function renderFilterScreen(){
+  renderLoading('Carregando filtro…');
+  try{
+    await loadExcludedSet(currentPlayer);
+  }catch(e){
+    console.error(e);
+  }
+  renderHeader('filter');
+  progressEl.style.width = '0%';
+
+  let html = '<div class="section-title">🎯 Personalizar treino de '+escapeHtml(currentPlayer)+'</div>';
+  html += '<div class="filter-count" id="filterCount">'+(100-excludedSet.size)+' de 100 perguntas ativas no próximo treino.</div>';
+  html += '<div class="filter-toolbar">' +
+    '<input type="text" class="filter-search" id="filterSearch" placeholder="Buscar pergunta…">' +
+    '<button class="btn btn-ghost" id="resetFilterBtn" style="padding:8px 14px; font-size:12.5px;">🔁 Mostrar as 100 de novo</button>' +
+  '</div>';
+  html += '<div style="font-size:12px; color:#8a8470; margin-bottom:14px;">Desative as perguntas que você já domina — elas somem do próximo treino, mas continuam guardadas aqui pra reativar quando quiser.</div>';
+  html += '<div class="filter-list" id="filterList">';
+  QUESTIONS.forEach((q,i)=>{
+    const isExcluded = excludedSet.has(i);
+    html += '<div class="filter-item'+(isExcluded?' excluded':'')+'" data-search="'+escapeHtml(q.q.toLowerCase())+'">' +
+      '<span class="fnum">'+(i+1)+'</span>' +
+      '<span class="ftext">'+escapeHtml(q.q)+'</span>' +
+      '<button class="filter-toggle '+(isExcluded?'inactive':'active')+'" data-idx="'+i+'">'+(isExcluded?'Oculta':'Ativa')+'</button>' +
+    '</div>';
+  });
+  html += '</div>';
+
+  card.innerHTML = html;
+
+  function updateCountUI(){
+    document.getElementById('filterCount').textContent = (100-excludedSet.size)+' de 100 perguntas ativas no próximo treino.';
+  }
+
+  document.querySelectorAll('.filter-toggle').forEach(btn=>{
+    btn.addEventListener('click', async ()=>{
+      const i = parseInt(btn.dataset.idx,10);
+      const row = btn.closest('.filter-item');
+      if(excludedSet.has(i)){
+        excludedSet.delete(i);
+        btn.textContent = 'Ativa';
+        btn.classList.remove('inactive');
+        btn.classList.add('active');
+        row.classList.remove('excluded');
+      } else {
+        if(100 - excludedSet.size <= 4){
+          alert('Deixa pelo menos 4 perguntas ativas pra dar pra treinar.');
+          return;
+        }
+        excludedSet.add(i);
+        btn.textContent = 'Oculta';
+        btn.classList.remove('active');
+        btn.classList.add('inactive');
+        row.classList.add('excluded');
+      }
+      updateCountUI();
+      try{
+        await saveFilter(currentPlayer, Array.from(excludedSet));
+      }catch(e){
+        console.error(e);
+      }
+    });
+  });
+
+  document.getElementById('resetFilterBtn').addEventListener('click', async ()=>{
+    if(!confirm('Isso reativa as 100 perguntas pro treino de '+currentPlayer+'. Confirma?')) return;
+    excludedSet = new Set();
+    try{
+      await saveFilter(currentPlayer, []);
+    }catch(e){
+      console.error(e);
+    }
+    renderFilterScreen();
+  });
+
+  document.getElementById('filterSearch').addEventListener('input', (e)=>{
+    const term = e.target.value.trim().toLowerCase();
+    document.querySelectorAll('#filterList .filter-item').forEach(row=>{
+      const match = !term || row.dataset.search.includes(term);
+      row.style.display = match ? '' : 'none';
+    });
+  });
 }
 
 /* ---------- history view (per player) ---------- */
