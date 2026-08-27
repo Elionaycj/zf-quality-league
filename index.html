@@ -466,6 +466,17 @@ async function saveFilter(name, excludedArr){
 }
 
 let excludedSet = new Set();
+let allExcludedMaps = {}; // nome -> Set de índices ocultos
+let filterTargets = new Set(); // pra quem o próximo toggle na tela de filtro vai valer
+
+async function loadAllFilters(){
+  const results = await Promise.all(ROSTER.map(n=>loadFilter(n).catch(()=>null)));
+  allExcludedMaps = {};
+  ROSTER.forEach((n,i)=>{
+    const f = results[i];
+    allExcludedMaps[n] = new Set((f && Array.isArray(f.excluded)) ? f.excluded : []);
+  });
+}
 
 /* ---------- game state ---------- */
 let order = [];
@@ -1060,20 +1071,45 @@ async function renderGraph(){
 async function renderFilterScreen(){
   renderLoading('Carregando filtro…');
   try{
-    await loadExcludedSet(currentPlayer);
+    await loadAllFilters();
   }catch(e){
     console.error(e);
   }
+  excludedSet = new Set(allExcludedMaps[currentPlayer] || []);
+  filterTargets = new Set([currentPlayer]);
+  drawFilterScreen();
+}
+
+function drawFilterScreen(){
   renderHeader('filter');
   progressEl.style.width = '0%';
 
-  let html = '<div class="section-title">🎯 Personalizar treino de '+escapeHtml(currentPlayer)+'</div>';
-  html += '<div class="filter-count" id="filterCount">'+(100-excludedSet.size)+' de 100 perguntas ativas no próximo treino.</div>';
+  let html = '<div class="section-title">🎯 Personalizar treino</div>';
+  html += '<div style="font-size:12.5px; color:#8a8470; margin-bottom:12px;">Escolha pra quem esse filtro vale — pode ser só você ou vários jogadores de uma vez.</div>';
+
+  html += '<div class="filter-toolbar">' +
+    '<button class="nav-btn" id="selAllBtn" style="background:transparent; color:var(--pitch2); border-color:var(--pitch2);">☑ Todo o time</button>' +
+    '<button class="nav-btn" id="selOnlyMeBtn" style="background:transparent; color:var(--pitch2); border-color:var(--pitch2);">Só eu</button>' +
+  '</div>';
+
+  html += '<div class="roster-grid" id="targetGrid" style="margin-bottom:18px;">';
+  ROSTER.forEach(n=>{
+    const checked = filterTargets.has(n);
+    const isMe = n === currentPlayer;
+    html += '<button class="roster-btn" data-target="'+escapeHtml(n)+'" style="font-size:13.5px; padding:11px 10px; '+
+      (checked?'border-color:var(--pitch2); background:#eaf6ee;':'')+'">'+
+      (checked?'✅ ':'⬜ ')+escapeHtml(n)+(isMe?' (você)':'')+
+    '</button>';
+  });
+  html += '</div>';
+
+  const activeCount = 100 - excludedSet.size;
+  html += '<div class="filter-count" id="filterCount">'+activeCount+' de 100 perguntas ativas — mudanças valem pra <b id="targetCount">'+filterTargets.size+'</b> jogador(es) selecionado(s).</div>';
   html += '<div class="filter-toolbar">' +
     '<input type="text" class="filter-search" id="filterSearch" placeholder="Buscar pergunta…">' +
     '<button class="btn btn-ghost" id="resetFilterBtn" style="padding:8px 14px; font-size:12.5px;">🔁 Mostrar as 100 de novo</button>' +
   '</div>';
-  html += '<div style="font-size:12px; color:#8a8470; margin-bottom:14px;">Desative as perguntas que você já domina — elas somem do próximo treino, mas continuam guardadas aqui pra reativar quando quiser.</div>';
+  html += '<div style="font-size:12px; color:#8a8470; margin-bottom:14px;">Desative as perguntas que já foram dominadas — elas somem do próximo treino de quem estiver selecionado acima, mas continuam guardadas aqui pra reativar quando quiser.</div>';
   html += '<div class="filter-list" id="filterList">';
   QUESTIONS.forEach((q,i)=>{
     const isExcluded = excludedSet.has(i);
@@ -1087,49 +1123,83 @@ async function renderFilterScreen(){
 
   card.innerHTML = html;
 
+  document.querySelectorAll('#targetGrid .roster-btn').forEach(b=>{
+    const n = b.dataset.target;
+    if(n === currentPlayer){
+      b.disabled = true;
+      b.style.opacity = '0.85';
+      b.style.cursor = 'default';
+      return;
+    }
+    b.addEventListener('click', ()=>{
+      if(filterTargets.has(n)){
+        filterTargets.delete(n);
+      } else {
+        filterTargets.add(n);
+      }
+      drawFilterScreen();
+    });
+  });
+  document.getElementById('selAllBtn').addEventListener('click', ()=>{
+    filterTargets = new Set(ROSTER);
+    drawFilterScreen();
+  });
+  document.getElementById('selOnlyMeBtn').addEventListener('click', ()=>{
+    filterTargets = new Set([currentPlayer]);
+    drawFilterScreen();
+  });
+
   function updateCountUI(){
-    document.getElementById('filterCount').textContent = (100-excludedSet.size)+' de 100 perguntas ativas no próximo treino.';
+    document.getElementById('filterCount').innerHTML =
+      (100-excludedSet.size)+' de 100 perguntas ativas — mudanças valem pra <b id="targetCount">'+filterTargets.size+'</b> jogador(es) selecionado(s).';
   }
 
   document.querySelectorAll('.filter-toggle').forEach(btn=>{
     btn.addEventListener('click', async ()=>{
       const i = parseInt(btn.dataset.idx,10);
       const row = btn.closest('.filter-item');
-      if(excludedSet.has(i)){
-        excludedSet.delete(i);
-        btn.textContent = 'Ativa';
-        btn.classList.remove('inactive');
-        btn.classList.add('active');
-        row.classList.remove('excluded');
-      } else {
-        if(100 - excludedSet.size <= 4){
-          alert('Deixa pelo menos 4 perguntas ativas pra dar pra treinar.');
-          return;
-        }
-        excludedSet.add(i);
-        btn.textContent = 'Oculta';
-        btn.classList.remove('active');
-        btn.classList.add('inactive');
-        row.classList.add('excluded');
+      const willExclude = !excludedSet.has(i);
+
+      if(willExclude && 100 - excludedSet.size <= 4){
+        alert('Deixa pelo menos 4 perguntas ativas pra dar pra treinar.');
+        return;
       }
+
+      if(willExclude){ excludedSet.add(i); } else { excludedSet.delete(i); }
+      btn.textContent = willExclude ? 'Oculta' : 'Ativa';
+      btn.classList.toggle('inactive', willExclude);
+      btn.classList.toggle('active', !willExclude);
+      row.classList.toggle('excluded', willExclude);
       updateCountUI();
-      try{
-        await saveFilter(currentPlayer, Array.from(excludedSet));
-      }catch(e){
-        console.error(e);
-      }
+
+      const targets = Array.from(filterTargets);
+      await Promise.all(targets.map(async n=>{
+        const set = allExcludedMaps[n] ? allExcludedMaps[n] : new Set();
+        if(willExclude){ set.add(i); } else { set.delete(i); }
+        allExcludedMaps[n] = set;
+        try{
+          await saveFilter(n, Array.from(set));
+        }catch(e){
+          console.error(e);
+        }
+      }));
     });
   });
 
   document.getElementById('resetFilterBtn').addEventListener('click', async ()=>{
-    if(!confirm('Isso reativa as 100 perguntas pro treino de '+currentPlayer+'. Confirma?')) return;
+    const targets = Array.from(filterTargets);
+    const label = targets.length === ROSTER.length ? 'todo o time' : targets.join(', ');
+    if(!confirm('Isso reativa as 100 perguntas pra: '+label+'. Confirma?')) return;
     excludedSet = new Set();
-    try{
-      await saveFilter(currentPlayer, []);
-    }catch(e){
-      console.error(e);
-    }
-    renderFilterScreen();
+    await Promise.all(targets.map(async n=>{
+      allExcludedMaps[n] = new Set();
+      try{
+        await saveFilter(n, []);
+      }catch(e){
+        console.error(e);
+      }
+    }));
+    drawFilterScreen();
   });
 
   document.getElementById('filterSearch').addEventListener('input', (e)=>{
