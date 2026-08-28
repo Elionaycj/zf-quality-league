@@ -629,7 +629,7 @@ function renderHeader(view){
     leftHtml += '<div class="pill">🎯 Acerto <b id="acc">'+(answered? Math.round(score/answered*100)+'%':'—')+'</b></div>';
     leftHtml += progressSyncOk
       ? '<div class="pill">☁ Progresso salvo</div>'
-      : '<div class="pill" style="border-color:var(--red); color:#ffb3ab;">⚠ Sem conexão — não salvou</div>';
+      : '<div class="pill" style="border-color:var(--red); color:#ffb3ab;" title="'+escapeHtml(String(lastProgressError||''))+'">⚠ Não salvou: '+escapeHtml(String(lastProgressError||'erro desconhecido'))+'</div>';
   } else if(!isTecnico && currentPlayer){
     const agg = playerAgg(currentPlayer);
     leftHtml += '<div class="pill">🎮 Jogos <b>'+agg.games+'</b></div>';
@@ -777,13 +777,17 @@ function resumeGame(progress){
   renderQuestion(true);
 }
 
+let lastProgressError = null;
+
 async function persistProgress(){
   try{
     await saveProgress(currentPlayer, { order, idx, score, answered, log: fullLog });
     progressSyncOk = true;
+    lastProgressError = null;
   }catch(e){
-    console.error(e);
+    console.error('Falha ao salvar progresso:', e);
     progressSyncOk = false;
+    lastProgressError = (e && e.code) ? e.code : ((e && e.message) ? e.message : String(e));
   }
   renderHeader('quiz');
 }
