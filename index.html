@@ -366,7 +366,7 @@
 
 <script type="module">
 import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-app.js";
-import { getFirestore, collection, addDoc, getDocs, doc, setDoc, getDoc, deleteDoc } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js";
+import { initializeFirestore, collection, addDoc, getDocs, doc, setDoc, getDoc, deleteDoc } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js";
 import { getAuth, signInWithEmailAndPassword, onAuthStateChanged, signOut } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-auth.js";
 
 /* ============================================================
@@ -389,7 +389,13 @@ const firebaseConfigured = !!(firebaseConfig.apiKey && !firebaseConfig.apiKey.st
 let app, db, auth;
 if(firebaseConfigured){
   app = initializeApp(firebaseConfig);
-  db = getFirestore(app);
+  // força modo de conexão "long polling" — mais compatível com proxy/firewall
+  // corporativo e antivírus que bloqueiam o streaming padrão do Firestore
+  // (causa comum do erro "Cannot read properties of null (reading 'indexOf')")
+  db = initializeFirestore(app, {
+    experimentalForceLongPolling: true,
+    useFetchStreams: false
+  });
   auth = getAuth(app);
 }
 
