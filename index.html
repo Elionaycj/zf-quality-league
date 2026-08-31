@@ -389,12 +389,11 @@ const firebaseConfigured = !!(firebaseConfig.apiKey && !firebaseConfig.apiKey.st
 let app, db, auth;
 if(firebaseConfigured){
   app = initializeApp(firebaseConfig);
-  // força modo de conexão "long polling" — mais compatível com proxy/firewall
-  // corporativo e antivírus que bloqueiam o streaming padrão do Firestore
-  // (causa comum do erro "Cannot read properties of null (reading 'indexOf')")
+  // deixa o SDK detectar automaticamente o melhor modo de conexão
+  // (a combinação "force long polling" + "useFetchStreams:false" tem um bug
+  // conhecido nesta versão do SDK que gera "Cannot read properties of null (reading 'indexOf')")
   db = initializeFirestore(app, {
-    experimentalForceLongPolling: true,
-    useFetchStreams: false
+    experimentalAutoDetectLongPolling: true
   });
   auth = getAuth(app);
 }
@@ -440,11 +439,11 @@ async function saveSession(name, session){
 
 /* ---------- progresso em andamento (retomar de onde parou) ---------- */
 async function loadProgress(name){
-  const snap = await getDoc(doc(db, PROGRESS_COLLECTION, name));
+  const snap = await getDoc(doc(collection(db, PROGRESS_COLLECTION), name));
   return snap.exists() ? snap.data() : null;
 }
 async function saveProgress(name, progress){
-  await setDoc(doc(db, PROGRESS_COLLECTION, name), {
+  await setDoc(doc(collection(db, PROGRESS_COLLECTION), name), {
     player: name,
     order: progress.order,
     idx: progress.idx,
@@ -455,16 +454,16 @@ async function saveProgress(name, progress){
   });
 }
 async function clearProgress(name){
-  await deleteDoc(doc(db, PROGRESS_COLLECTION, name));
+  await deleteDoc(doc(collection(db, PROGRESS_COLLECTION), name));
 }
 
 /* ---------- filtro de perguntas (treino personalizado) ---------- */
 async function loadFilter(name){
-  const snap = await getDoc(doc(db, FILTERS_COLLECTION, name));
+  const snap = await getDoc(doc(collection(db, FILTERS_COLLECTION), name));
   return snap.exists() ? snap.data() : null;
 }
 async function saveFilter(name, excludedArr){
-  await setDoc(doc(db, FILTERS_COLLECTION, name), {
+  await setDoc(doc(collection(db, FILTERS_COLLECTION), name), {
     player: name,
     excluded: excludedArr,
     updatedAt: new Date().toISOString()
@@ -510,6 +509,14 @@ function escapeHtml(str){
   const d = document.createElement('div');
   d.textContent = str;
   return d.innerHTML;
+}
+function describeError(e){
+  if(!e) return 'erro desconhecido';
+  const parts = [];
+  if(e.code) parts.push('código: '+e.code);
+  if(e.name && e.name !== 'Error') parts.push('tipo: '+e.name);
+  parts.push('mensagem: '+(e.message || String(e)));
+  return parts.join(' | ');
 }
 function fmtDate(iso){
   const d = new Date(iso);
@@ -787,7 +794,7 @@ async function persistProgress(){
   }catch(e){
     console.error('Falha ao salvar progresso:', e);
     progressSyncOk = false;
-    lastProgressError = (e && e.code) ? e.code : ((e && e.message) ? e.message : String(e));
+    lastProgressError = describeError(e);
   }
   renderHeader('quiz');
 }
@@ -1205,7 +1212,7 @@ function drawFilterScreen(){
         btn.classList.toggle('active', willExclude);
         row.classList.toggle('excluded', !willExclude);
         updateCountUI();
-        alert('Não consegui salvar essa mudança no banco de dados (erro de permissão ou conexão). Nada foi alterado.\n\nVerifique nas Regras do Firestore se a coleção "zfql_filters" está liberada pra esses nomes, e se você publicou as regras.\n\nDetalhe técnico: ' + (failed[0].reason && failed[0].reason.message ? failed[0].reason.message : failed[0].reason));
+        alert('Não consegui salvar essa mudança no banco de dados. Nada foi alterado.\n\nVerifique nas Regras do Firestore se a coleção "zfql_filters" está liberada pra esses nomes, e se você publicou as regras.\n\nDetalhe técnico: ' + describeError(failed[0].reason));
       }
     });
   });
@@ -1237,8 +1244,8 @@ function drawFilterScreen(){
     if(failedNames.length){
       console.error('Falha ao resetar filtro:', failedNames, firstError);
       alert('Não consegui reativar as perguntas pra: ' + failedNames.join(', ') +
-        '.\n\nErro de permissão ou conexão — nada foi alterado pra quem falhou.\n\nDetalhe técnico: ' +
-        (firstError && firstError.message ? firstError.message : firstError));
+        '.\n\nNada foi alterado pra quem falhou.\n\nDetalhe técnico: ' +
+        describeError(firstError));
     }
     if(allExcludedMaps[currentPlayer]) excludedSet = new Set(allExcludedMaps[currentPlayer]);
     drawFilterScreen();
