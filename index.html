@@ -439,11 +439,18 @@ async function saveSession(name, session){
 }
 
 /* ---------- progresso em andamento (retomar de onde parou) ---------- */
+function assertValidName(name, fnLabel){
+  if(!name || typeof name !== 'string' || !name.trim()){
+    throw new Error(fnLabel+' recebeu um nome de jogador inválido: '+JSON.stringify(name));
+  }
+}
 async function loadProgress(name){
+  assertValidName(name, 'loadProgress');
   const snap = await getDoc(doc(collection(db, PROGRESS_COLLECTION), name));
   return snap.exists() ? snap.data() : null;
 }
 async function saveProgress(name, progress){
+  assertValidName(name, 'saveProgress');
   await setDoc(doc(collection(db, PROGRESS_COLLECTION), name), {
     player: name,
     order: progress.order,
@@ -455,15 +462,18 @@ async function saveProgress(name, progress){
   });
 }
 async function clearProgress(name){
+  assertValidName(name, 'clearProgress');
   await deleteDoc(doc(collection(db, PROGRESS_COLLECTION), name));
 }
 
 /* ---------- filtro de perguntas (treino personalizado) ---------- */
 async function loadFilter(name){
+  assertValidName(name, 'loadFilter');
   const snap = await getDoc(doc(collection(db, FILTERS_COLLECTION), name));
   return snap.exists() ? snap.data() : null;
 }
 async function saveFilter(name, excludedArr){
+  assertValidName(name, 'saveFilter');
   await setDoc(doc(collection(db, FILTERS_COLLECTION), name), {
     player: name,
     excluded: excludedArr,
@@ -1145,7 +1155,7 @@ async function renderFilterScreen(){
     console.error(e);
   }
   excludedSet = new Set(allExcludedMaps[currentPlayer] || []);
-  filterTargets = new Set([currentPlayer]);
+  filterTargets = new Set([currentPlayer].filter(Boolean));
   drawFilterScreen();
 }
 
@@ -1194,6 +1204,7 @@ function drawFilterScreen(){
 
   document.querySelectorAll('#targetGrid .roster-btn').forEach(b=>{
     const n = b.dataset.target;
+    if(!n) return; // trava defensiva — nunca deve acontecer, mas evita salvar nome vazio
     if(n === currentPlayer){
       b.disabled = true;
       b.style.opacity = '0.85';
@@ -1210,11 +1221,11 @@ function drawFilterScreen(){
     });
   });
   document.getElementById('selAllBtn').addEventListener('click', ()=>{
-    filterTargets = new Set(ROSTER);
+    filterTargets = new Set(ROSTER.filter(Boolean));
     drawFilterScreen();
   });
   document.getElementById('selOnlyMeBtn').addEventListener('click', ()=>{
-    filterTargets = new Set([currentPlayer]);
+    filterTargets = new Set([currentPlayer].filter(Boolean));
     drawFilterScreen();
   });
 
@@ -1243,7 +1254,8 @@ function drawFilterScreen(){
       btn.disabled = true;
       updateCountUI();
 
-      const targets = Array.from(filterTargets);
+      const targets = Array.from(filterTargets).filter(Boolean);
+      console.log('[diag] salvando filtro pra:', JSON.stringify(targets), '| currentPlayer:', JSON.stringify(currentPlayer));
       const results = await Promise.allSettled(targets.map(async n=>{
         const set = new Set(allExcludedMaps[n] || []);
         if(willExclude){ set.add(i); } else { set.delete(i); }
@@ -1270,7 +1282,7 @@ function drawFilterScreen(){
   });
 
   document.getElementById('resetFilterBtn').addEventListener('click', async ()=>{
-    const targets = Array.from(filterTargets);
+    const targets = Array.from(filterTargets).filter(Boolean);
     const label = targets.length === ROSTER.length ? 'todo o time' : targets.join(', ');
     if(!confirm('Isso reativa as 100 perguntas pra: '+label+'. Confirma?')) return;
 
